@@ -1,0 +1,5 @@
+.buildconfig
+*.o
+*.bin
+*.img
+*~
