@@ -3,24 +3,20 @@
 ; - http://www.osdever.net/tutorials/view/xosdev-chapter-1
 ; - https://wiki.osdev.org/A20_Line
 ; - https://wiki.osdev.org/GDT
-	
+; - https://wiki.osdev.org/%228042%22_PS/2_Controller#PS.2F2_Controller_IO_Ports
+
 	bits 16				; Starting in real mode, generate 16-bit code
 	org 0x7C00			; BIOS loads the booloader at address 0x7C00
 	jmp boot			; Jump to beginning
 
-; This routine attempts to enable the A20 line using several methods:
-; - BIOS interrupts
-; - Keyboard controller
-; - Fast A20
-;
+; This routine attempts to enable the A20 line using BIOS functions, the keyboard
+; controller and the fast A20 gate methods.
+; 
 ; Returns 0 on success, -1 otherwise
 enable_A20:
-	pushad				; Save the flag and segment registers
-	pushfd
-
-	call check_A20			; Test if A20 is already enabled by BIOS
-	cmp ax, 0
-	jz enable_A20_return		; Already done!
+	cli				; Disable interrupts while we work!
+	pusha				; Save registers
+	pushf
 
 	; BIOS method
 	mov ax, 0x2403			; Query A20 support
@@ -47,65 +43,71 @@ enable_A20:
 
 	xor ax, ax			; Set return value
 	jmp enable_A20_return		; BIOS method success
-
-	; Keyboard controller method
-A20_NOBIOS:
-	call A20_OUT_WAIT		; Wait for keyboard
+	
+	; Keyboard method
+A20_NOBIOS:	
+	call A20_OUT_WAIT		; Wait for keyboard inputs to become available
         mov al, 0xAD			; Disable keyboard
         out 0x64, al
+	
+	call A20_OUT_WAIT		; Wait for input...
+	mov al, 0xD0			; Tell it we want to read from output port
+	out 0x64, al
+	
+	call A20_IN_WAIT		; Wait for the controller to return output
+	in al, 0x60			; Read current controller status
+	push ax				; Save status
 
-        mov al, 0xD0			; Read controller out port
-        out 0x64, al
- 
-        call A20_IN_WAIT		; Wait...
-        in al, 0x60			; Read data port
-        push ax				; Save
- 
-        call A20_OUT_WAIT		; Wait...
-        mov al, 0xD1			; Write controller output port
-        out 0x64, al
- 
-        call A20_OUT_WAIT		; Wait...
-        pop ax				; Restore port data
-        or al, 2			; Bit 1 enables A20
-        out 0x60, al			; Write to data port
- 
-        call A20_OUT_WAIT		; Wait...
-        mov al, 0xAE			; Enable keyboard
-        out 0x64, al
- 
-        call A20_OUT_WAIT		; Wait...
-	call check_A20			; Confirm A20 is enabled
+	call A20_OUT_WAIT		; Wait for input...
+	mov al, 0xD1			; Tell it we want to write to output port
+	out 0x64, al
+
+	call A20_OUT_WAIT		; Wait for input...
+	pop ax				; Restore status
+	or al, 2			; Set A20 enable bit
+	out 0x60, al			; Write status back to controller
+
+	call A20_OUT_WAIT		; Wait for input...
+	mov al, 0xAE			; Re-enable keyboard
+	out 0x64, al
+
+	call A20_OUT_WAIT		; Clear input buffer
+	call check_A20			; Check if A20 was set
 	jz enable_A20_return		; If yes, we're done!
 
 	; Fast A20 method
 	in al, 0x92			; Read system control port A
 	test al, 2			; Test Fast A20 bit
+	
 	push ax				; Save AX
 	mov ax, -1			; Indicate failure
 	jnz enable_A20_return		; Failed to enable A20
 	pop ax				; Restore AX
+	
 	or al, 2			; Bit 1 enables A20
 	and al, 0xFE			; Clear bit 0 to avoid a reboot
 	out 0x92, al			; Write to system control port A
 	call check_A20			; Confirm A20 is enabled
 	jmp enable_A20_return		; Return either way
 	
+; Spin until the output buffer is full
+A20_IN_WAIT:
+	in al, 0x64
+	test al, 1
+	jz A20_IN_WAIT
+	ret
+
+; Spin until the input buffer is empty
 A20_OUT_WAIT:
 	in al, 0x64
 	test al, 2
 	jnz A20_OUT_WAIT
 	ret
 
-A20_IN_WAIT:
-	in al, 0x64
-	test al, 1
-	jz A20_IN_WAIT
-	ret
-	
-enable_A20_return:	
-	popfd				; Restore flag and segment registers
-	popad
+enable_A20_return:
+	popf				; Restore registers
+	popa
+	sti				; Re-enable interrupts
 	ret
 	
 ; This routine checks if the A20 line is enabled by comparing the boot signature
@@ -114,8 +116,9 @@ enable_A20_return:
 ;
 ; Returns: 0 if A20 is enabled, -1 otherwise
 check_A20:
-	pushad				; Save the flag and segment registers
-	pushfd
+	cli				; Disable interrupts
+	pusha				; Save registers
+	pushf
 	push ds
 	push es
 
@@ -124,8 +127,8 @@ check_A20:
 	not ax				; AX = 0xFFFF (second segment)
 	mov ds, ax
 
-	mov di, 0x7DFE			; Location of boot identifier
-	mov si, 0x7E0E			; 1MiB above it
+	mov di, 0x0500			; Location of boot identifier
+	mov si, 0x0510			; 1MiB above it
 
 	; Get a byte from the boot identifier and from 1MiB above it
 	mov al, byte [es:di]
@@ -144,41 +147,42 @@ check_A20:
 	pop ax
 	mov byte [es:di], al
 
-	mov ax, -1			; Assume failure
-	je check_A20_return		; Exit if A20 disabled
-	not ax				; A20 is enabled
+	xor ax, ax			; Assume success
+	jne check_A20_return		; Exit if A20 enabled
+	not ax				; Failure!
 	
 check_A20_return:			; Restore registers and return
 	pop es
 	pop ds
-	popfd
-	popad
+	popf
+	popa
+	sti				; Re-enable interrupts
 	ret
-
+	
 boot:					; Actual start of the bootloader
-	cli				; Disable interrupts while we work!
 	xor ax, ax			; Clear AX
 	mov ds, ax			; Initialize DS
 	call enable_A20			; Enable the A20 line (AX = 0 on success)
 	jz cont				; Continue booting
-	
-	mov si, ERRA20			; Point to A20 error message
+
+	mov si, errmsg			; Point to A20 error message
 	mov ah, 0x0E			; BIOS character display function
 	mov bh, 0x00			; Page #
 	mov bl, 0x07			; Normal text attribute
 	
-perr:
+error:
 	lodsb				; Load character at [SI] to AL
 	cmp al, 0			; Check for null terminator
 	jz end				; Quit
 	int 0x10			; BIOS print interrupt
-	jmp perr
+	jmp error
 	
 cont:
 	lgdt [gdt_desc]			; Give CPU the GDT
 	mov eax, cr0			; Get CR0 into AX
 	or eax, 1			; Set bit 0
 	mov cr0, eax			; Enter 32-bit PMode!
+					; (BIOS functions no longer accessible)
 	
 	jmp 0x8:clear_pipe		; Jump using selector and clear pipe
 
@@ -188,18 +192,13 @@ clear_pipe:
 	mov ds, ax			; Initialize DS
 	mov ss, ax			; Initialize SS
 	mov esp, 0x90000		; Point the stack to a free memory area
-
-	;  Print a character on the screen as a test
-	mov esi, 0xB8000
-	mov [esi], byte 'P'
-	mov [esi+1], byte 0x1B
-
+	
 end:	
-	sti				; Re-enable interrupts
 	hlt				; Halt execution, we're done!
 
-ERRA20:	db "Couldn't enable A20",0 	; A20 enable error message
-	
+errmsg:					; A20 enable error message
+	db "Could not enable A20",0
+
 gdt:					; Start of the GDT for PMode
 gdt_null:				; NULL segment
 	dq 0
