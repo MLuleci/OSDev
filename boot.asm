@@ -36,6 +36,7 @@ enable_A20:
 	jnz A20_NOBIOS			; Can't get status
 
 	cmp al, 1
+	xor ax, ax			; Clear AX, doesn't affect flags
 	jz enable_A20_return		; A20 enabled
 
 	mov ax, 0x2401			; Activate A20 with BIOS
@@ -80,8 +81,10 @@ A20_NOBIOS:
 	; Fast A20 method
 	in al, 0x92			; Read system control port A
 	test al, 2			; Test Fast A20 bit
+	push ax				; Save AX
 	mov ax, -1			; Indicate failure
 	jnz enable_A20_return		; Failed to enable A20
+	pop ax				; Restore AX
 	or al, 2			; Bit 1 enables A20
 	and al, 0xFE			; Clear bit 0 to avoid a reboot
 	out 0x92, al			; Write to system control port A
