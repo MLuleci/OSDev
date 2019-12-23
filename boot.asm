@@ -194,7 +194,9 @@ boot:					; Actual start of the bootloader
 	xor ax, ax
 	mov ds, ax			; Initialize DS
 	call enable_A20			; Enable the A20 line (AX = 0 on success)
+	or ax, ax
 	jz cont1			; Success!
+	
 	push a20err			; Print error message & die
 	call print
 	add sp, 2
@@ -211,9 +213,9 @@ cont1:
 	mov dh,	0			; Head #
 					; DL = Drive to use, already set by BIOS 
 	int 0x13			; Load the kernel into ES:BX from floppy
-
 	or ah, ah			; Check for errors	
 	jz cont2			; Success!
+	
 	push lderr			; Print error message & die
 	call print
 	add sp, 2
