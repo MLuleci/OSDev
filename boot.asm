@@ -1,6 +1,6 @@
 ; References & resources:
 ; - http://www.osdever.net/tutorials/view/the-world-of-protected-mode
-; - http://www.osdever.net/tutorials/view/xosdev-chapter-1
+; - http://www.osdever.net/tutorials/view/xosdev-chapter-12
 ; - https://wiki.osdev.org/A20_Line
 ; - https://wiki.osdev.org/GDT
 ; - https://wiki.osdev.org/%228042%22_PS/2_Controller#PS.2F2_Controller_IO_Ports
@@ -18,6 +18,10 @@ enable_A20:
 	pusha				; Save registers
 	pushf
 
+	call check_A20			; Test if A20 is already enabled by BIOS
+	cmp ax, 0
+	jz enable_A20_return		; Already done!
+	
 	; BIOS method
 	mov ax, 0x2403			; Query A20 support
 	int 0x15
@@ -47,7 +51,7 @@ enable_A20:
 	; Keyboard method
 A20_NOBIOS:	
 	call A20_OUT_WAIT		; Wait for keyboard inputs to become available
-        mov al, 0xAD			; Disable keyboard
+	mov al, 0xAD			; Disable keyboard
         out 0x64, al
 	
 	call A20_OUT_WAIT		; Wait for input...
@@ -109,7 +113,7 @@ enable_A20_return:
 	popa
 	sti				; Re-enable interrupts
 	ret
-	
+
 ; This routine checks if the A20 line is enabled by comparing the boot signature
 ; found at 0000:7DFE to the location 1MiB above at FFFF:7E0E. If the two are the
 ; same then A20 is disabled, if not then the line must be enabled.
@@ -158,32 +162,72 @@ check_A20_return:			; Restore registers and return
 	popa
 	sti				; Re-enable interrupts
 	ret
-	
-boot:					; Actual start of the bootloader
-	xor ax, ax			; Clear AX
-	mov ds, ax			; Initialize DS
-	call enable_A20			; Enable the A20 line (AX = 0 on success)
-	jz cont				; Continue booting
 
-	mov si, errmsg			; Point to A20 error message
+; Method to print the message (null-terminated string) pointed to by the first argument.
+; The method uses BIOS interrupts to work, so only 16-bit addresses can be used.
+; Has no return value.
+print:
+	push bp				; Push BP onto the stack
+	mov bp, sp			; Copy SP into BP
+	push bx				; Push callee-saved registers
+	push si
+
+	mov si, [bp + 4]		; Get address of message
 	mov ah, 0x0E			; BIOS character display function
 	mov bh, 0x00			; Page #
 	mov bl, 0x07			; Normal text attribute
-	
-error:
+
+print_lp:
 	lodsb				; Load character at [SI] to AL
 	cmp al, 0			; Check for null terminator
-	jz end				; Quit
+	jz print_return			; Quit
 	int 0x10			; BIOS print interrupt
-	jmp error
+	jmp print_lp
+
+print_return:	
+	pop si				; Restore registers
+	pop bx
+	pop bp				; Restore BP
+	ret
+
+boot:					; Actual start of the bootloader
+	xor ax, ax
+	mov ds, ax			; Initialize DS
+	call enable_A20			; Enable the A20 line (AX = 0 on success)
+	jz cont1			; Success!
+	push a20err			; Print error message & die
+	call print
+	add sp, 2
+	jmp end
 	
-cont:
+cont1:
+	mov es, ax    			; Segment of memory buffer
+	mov bx, 0x500			; Offset of memory buffer
+					; 0x500-0x7BFF is guaranteed free memory (30KiB)
+	mov ah, 2			; Read floppy in CHS mode (cylndr, head, sector)
+	mov al, 2			; # of sectors to read (512 bytes each)
+	mov ch, 0			; Cylinder #
+	mov cl,	2			; Starting sector
+	mov dh,	0			; Head #
+					; DL = Drive to use, already set by BIOS 
+	int 0x13			; Load the kernel into ES:BX from floppy
+
+	or ah, ah			; Check for errors	
+	jz cont2			; Success!
+	push lderr			; Print error message & die
+	call print
+	add sp, 2
+	jmp end
+	
+cont2:
+	cli				; Disable interrupts
+	xor ax, ax
+	mov ds, ax			; Set DS = 0 to find DS:gdt_desc
 	lgdt [gdt_desc]			; Give CPU the GDT
-	mov eax, cr0			; Get CR0 into AX
-	or eax, 1			; Set bit 0
-	mov cr0, eax			; Enter 32-bit PMode!
-					; (BIOS functions no longer accessible)
 	
+	mov eax, cr0			; Get CR0 into EAX
+	or eax, 1			; Set bit 0
+	mov cr0, eax			; Enter 32-bit PMode! (BIOS services are no more)
 	jmp 0x8:clear_pipe		; Jump using selector and clear pipe
 
 	bits 32				; Now in PMode, generate 32-bit code
@@ -191,14 +235,21 @@ clear_pipe:
 	mov ax, 0x8			; Place the selector in AX
 	mov ds, ax			; Initialize DS
 	mov ss, ax			; Initialize SS
-	mov esp, 0x90000		; Point the stack to a free memory area
+	mov esp, 0x7E00			; Point the stack to a free memory area
+					; 0x7E00-0x7FFFF guaranteed free memory (480KiB)
+
+	sti				; Re-enable interrupts
+	jmp 0x8:0x500			; Jump to kernel entry
 	
 end:	
 	hlt				; Halt execution, we're done!
 
-errmsg:					; A20 enable error message
+a20err:					; A20 enable error message
 	db "Could not enable A20",0
 
+lderr:					; Kernel load/disk read error
+	db "Could not load kernel",0
+	
 gdt:					; Start of the GDT for PMode
 gdt_null:				; NULL segment
 	dq 0
