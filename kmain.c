@@ -1,7 +1,7 @@
 #include "video.h"
 #include "ports.h"
 #define halt() while(1)
-const char *str;
+const char *str = "Hello from the kernel!";
 
 void kmain()
 {
@@ -9,4 +9,3 @@ void kmain()
   print(str);
   halt();
 }
-const char *str = "Hello from the kernel!";

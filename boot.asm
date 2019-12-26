@@ -24,12 +24,11 @@ reset_drive:
 	or ah, ah     			; Check for errors
 	jnz reset_drive			; Try again
 
-	xor ax, ax
 	mov es, ax    			; Segment of memory buffer = 0
 	mov bx, 0x0500			; Offset of memory buffer
 					; 0x500-0x7BFF is guaranteed free memory (30KiB)
 	mov ah, 0x02			; Read floppy in CHS mode (cylndr, head, sector)
-	mov al, 0x04			; # of sectors to read (512 bytes each)
+	mov al, 0x02			; # of sectors to read (512 bytes each)
 	mov ch, 0			; Cylinder #
 	mov cl,	0x02			; Starting sector
 	mov dh,	0			; Head #
@@ -59,9 +58,10 @@ clear_pipe:
 	mov ss, ax			; Initialize SS
 	mov esp, 0x7E00			; Point the stack to a free memory area
 					; 0x7E00-0x7FFFF guaranteed free memory (480KiB)
-	jmp 0x08:0x0500			; Jump to kernel entry
+	jmp 0x08:0x0653			; Jump to kernel entry
 	hlt				; Halt execution, we're done!
 
+	[BITS 16]			; These routines execute in real mode
 ; This routine attempts to enable the A20 line using BIOS functions, the keyboard
 ; controller and the fast A20 gate methods.
 ; 
@@ -167,13 +167,12 @@ enable_A20:
 	sti				; Re-enable interrupts
 	ret
 
-; This routine checks if the A20 line is enabled by comparing the boot signature
-; found at 0000:7DFE to the location 1MiB above at FFFF:7E0E. If the two are the
-; same then A20 is disabled, if not then the line must be enabled.
+; This routine checks if the A20 line is enabled by comparing the memory at 0000:0500
+; to the location 1MiB above at FFFF:0510. If the two are the same then A20 is disabled,
+; if not then the line must be enabled. 
 ;
 ; Returns: 0 if A20 is enabled, -1 otherwise
 check_A20:
-	cli				; Disable interrupts
 	pusha				; Save registers
 	pushf
 	push ds
@@ -183,9 +182,9 @@ check_A20:
 	mov es, ax
 	not ax				; AX = 0xFFFF (second segment)
 	mov ds, ax
-
-	mov di, 0x0500			; Location of boot identifier
-	mov si, 0x0510			; 1MiB above it
+	
+	mov di, 0x500			; Free memory 
+	mov si, 0x510			; 1MiB above it
 
 	; Get a byte from the boot identifier and from 1MiB above it
 	mov al, byte [es:di]
@@ -204,7 +203,7 @@ check_A20:
 	pop ax
 	mov byte [es:di], al
 
-	xor ax, ax			; Assume success
+	mov ax, 0			; Assume success
 	jne .check_A20_return		; Exit if A20 enabled
 	not ax				; Failure!
 	
@@ -213,7 +212,6 @@ check_A20:
 	pop ds
 	popf
 	popa
-	sti				; Re-enable interrupts
 	ret
 
 ; Method to print the message (null-terminated string) pointed to by the first argument.
