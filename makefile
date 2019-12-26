@@ -1,28 +1,30 @@
-ODIR = tmp
-OBJ = $(patsubst %.c,$(ODIR)/%.o,$(wildcard *.c))
-OUT = floppy.img
-LDFLAGS = -e kmain -Ttext 0
+DIR = tmp
 
-$(OUT) : $(ODIR)/kernel.bin $(ODIR)/boot.bin
-	dd if=/dev/zero          of=$@ status=none conv=sparse count=2048
-	dd if=$(ODIR)/boot.bin   of=$@ status=none conv=notrunc
-	dd if=$(ODIR)/kernel.bin of=$@ status=none conv=notrunc seek=1
+CSRC = $(wildcard *.c)
+COBJ = $(patsubst %.c,$(DIR)/%.o,$(CSRC))
 
-$(ODIR)/kernel.bin : $(ODIR)/kernel.o
-	objcopy -R .note -R .comment -S -O binary $^ $@
+ASRC = $(wildcard *.s)
+AOBJ = $(patsubst %.s,$(DIR)/%.o,$(ASRC))
 
-$(ODIR)/kernel.o : $(OBJ)
-	ld    $(LDFLAGS) -o $@ $^
-	ld -i $(LDFLAGS) -o $@ $^
+BIN = $(addprefix $(DIR)/,$(addsuffix .bin,kernel boot))
+IMG = $(addsuffix .img,floppy)
 
-$(ODIR)/%.o : %.c
-	gcc -c -o $@ $^
+$(IMG) : $(BIN)
+	dd if=/dev/zero of=$@ status=none conv=sparse count=2048
+	dd if=$(word 2,$(BIN)) of=$@ status=none conv=notrunc
+	dd if=$(word 1,$(BIN)) of=$@ status=none conv=notrunc seek=1
 
-$(ODIR)/kmain.o : kmain.c
+$(word 1,$(BIN)) : $(COBJ)
+	ld -T clink.ld -o $@ $^
+
+$(COBJ) : $(DIR)/%.o : %.c
 	gcc -ffreestanding -c -o $@ $^
 
-$(ODIR)/boot.bin : boot.asm
-	nasm -f bin -o $@ $^
+$(word 2,$(BIN)) : $(AOBJ)
+	ld -T alink.ld -o $@ $^
+
+$(AOBJ) : $(DIR)/%.o : %.s
+	nasm -f elf64 -o $@ $^
 
 clean :
-	rm -f $(ODIR)/* *.img
+	rm -f $(DIR)/* $(IMG)
