@@ -7,7 +7,60 @@
 
 	[BITS 16]			; Starting in real mode, generate 16-bit code
 	[ORG 0x7C00]			; BIOS loads the booloader at address 0x7C00
-	jmp boot			; Jump to beginning
+boot:
+	xor ax, ax
+	mov ds, ax			; Initialize DS
+	call enable_A20			; Enable the A20 line (AX = 0 on success)
+	or ax, ax			; Check for errors
+	jnz boot			; Try again
+
+	push A20OK			; Print status message
+	call print
+	add sp, 2
+	
+reset_drive:
+	mov ah, 0     			; BIOS reset drive function
+	int 0x13
+	or ah, ah     			; Check for errors
+	jnz reset_drive			; Try again
+
+	xor ax, ax
+	mov es, ax    			; Segment of memory buffer = 0
+	mov bx, 0x0500			; Offset of memory buffer
+					; 0x500-0x7BFF is guaranteed free memory (30KiB)
+	mov ah, 0x02			; Read floppy in CHS mode (cylndr, head, sector)
+	mov al, 0x04			; # of sectors to read (512 bytes each)
+	mov ch, 0			; Cylinder #
+	mov cl,	0x02			; Starting sector
+	mov dh,	0			; Head #
+					; DL = Drive to use, already set by BIOS 
+	int 0x13			; Load the kernel into ES:BX from floppy
+	or ah, ah			; Check for errors	
+	jnz reset_drive			; Try again
+
+	push LDOK			; Print status message
+	call print
+	add sp, 2
+	
+	cli				; Disable interrupts
+	xor ax, ax
+	mov ds, ax			; Set DS = 0 to find DS:gdt_desc
+	lgdt [gdt_desc]			; Give CPU the GDT
+	
+	mov eax, cr0			; Get CR0 into EAX
+	or eax, 1			; Set bit 0
+	mov cr0, eax			; Enter 32-bit PMode! (BIOS services are no more)
+	jmp 0x08:clear_pipe		; Jump using selector and clear pipe
+
+	[BITS 32]			; Now in PMode, generate 32-bit code
+clear_pipe:
+	mov ax, 0x10			; Place the selector in AX
+	mov ds, ax			; Initialize DS
+	mov ss, ax			; Initialize SS
+	mov esp, 0x7E00			; Point the stack to a free memory area
+					; 0x7E00-0x7FFFF guaranteed free memory (480KiB)
+	jmp 0x08:0x0500			; Jump to kernel entry
+	hlt				; Halt execution, we're done!
 
 ; This routine attempts to enable the A20 line using BIOS functions, the keyboard
 ; controller and the fast A20 gate methods.
@@ -190,65 +243,11 @@ print:
 	pop bp				; Restore BP
 	ret
 
-boot:					; Actual start of the bootloader
-	xor ax, ax
-	mov ds, ax			; Initialize DS
-	call enable_A20			; Enable the A20 line (AX = 0 on success)
-	or ax, ax
-	jz .cont1			; Success!
-	
-	push a20err			; Print error message & die
-	call print
-	add sp, 2
-	jmp end
-	
-.cont1:
-	mov es, ax    			; Segment of memory buffer = 0
-	mov bx, 0x500			; Offset of memory buffer
-					; 0x500-0x7BFF is guaranteed free memory (30KiB)
-	mov ah, 2			; Read floppy in CHS mode (cylndr, head, sector)
-	mov al, 2			; # of sectors to read (512 bytes each)
-	mov ch, 0			; Cylinder #
-	mov cl,	2			; Starting sector
-	mov dh,	0			; Head #
-					; DL = Drive to use, already set by BIOS 
-	int 0x13			; Load the kernel into ES:BX from floppy
-	or ah, ah			; Check for errors	
-	jz .cont2			; Success!
-	
-	push lderr			; Print error message & die
-	call print
-	add sp, 2
-	jmp end
-	
-.cont2:
-	cli				; Disable interrupts
-	xor ax, ax
-	mov ds, ax			; Set DS = 0 to find DS:gdt_desc
-	lgdt [gdt_desc]			; Give CPU the GDT
-	
-	mov eax, cr0			; Get CR0 into EAX
-	or eax, 1			; Set bit 0
-	mov cr0, eax			; Enter 32-bit PMode! (BIOS services are no more)
-	jmp 0x8:.clear_pipe		; Jump using selector and clear pipe
+A20OK:					; A20 enable error message
+	db "Enabled A20... ",0
 
-	[BITS 32]			; Now in PMode, generate 32-bit code
-.clear_pipe:
-	mov ax, 0x8			; Place the selector in AX
-	mov ds, ax			; Initialize DS
-	mov ss, ax			; Initialize SS
-	mov esp, 0x7E00			; Point the stack to a free memory area
-					; 0x7E00-0x7FFFF guaranteed free memory (480KiB)
-	jmp 0x8:0x500			; Jump to kernel entry
-	
-end:	
-	hlt				; Halt execution, we're done!
-
-a20err:					; A20 enable error message
-	db "Could not enable A20",0
-
-lderr:					; Kernel load/disk read error
-	db "Could not load kernel",0
+LDOK:					; Kernel load/disk read error
+	db "Loaded kernel... ",0
 	
 gdt:					; Start of the GDT for PMode
 gdt_null:				; NULL segment
@@ -268,7 +267,7 @@ gdt_data:				; Data segment, overlapping code segment
 	db 0b10010010			; Access bits for a system data segment
 	db 0b11001111
 	db 0
-gdt_end					; End of GDT
+gdt_end:				; End of GDT
 gdt_desc:				; GDT descriptor for the LGDT instruction
 	dw gdt_end - gdt		; Size of GDT
 	dw gdt				; Address of GDT
