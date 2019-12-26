@@ -1,6 +1,4 @@
 .buildconfig
-*.o
-*.bin
 *.img
 *~
 *.txt
